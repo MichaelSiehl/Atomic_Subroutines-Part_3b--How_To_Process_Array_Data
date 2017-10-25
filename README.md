@@ -260,7 +260,7 @@ subroutine OOOPimsc_SynchronizeAndDistributeTheTestArray_CA (Object_CA, intNumbe
                                                                 call OOOGglob_subResetProcedures
 end subroutine OOOPimsc_SynchronizeAndDistributeTheTestArray_CA
 ```
-<br />
+
 ```fortran
 ! executed on coarray image 1:
 !______________________________________________________________
