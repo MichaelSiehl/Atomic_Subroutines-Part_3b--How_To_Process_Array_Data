@@ -1,4 +1,4 @@
-! https://github.com/MichaelSiehl/Atomic_Subroutines--Part_3-b--How_To_Process_Array_Data
+! https://github.com/MichaelSiehl/Atomic_Subroutines-Part_3b--How_To_Process_Array_Data
 
 program Main
   use OOOGglob_Globals
