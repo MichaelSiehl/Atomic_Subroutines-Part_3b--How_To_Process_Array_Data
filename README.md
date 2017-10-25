@@ -177,3 +177,187 @@ subroutine OOOPimscSAElement_atomic_intTestArray_CA (Object_CA, intArrayElementS
  end subroutine
 ```
 The newly added 'intRemoteChannelNumberForLocalAtomicSet' (optional) argument allows to locally write a value to the data transfer channel of a remote image. This is required to prepare the local image for an upcoming synchronization. (It was not necessarily required with the simple example program here, but rather with a slightly more sophisticated code structure).<br />
+<br />
+3. And finally, the two procedures containing the parallel logic codes for steering the remote array transfer below:
+```fortran
+! executed on coarray images 2,3,4:
+!___________________________________________________________
+!
+! public
+subroutine OOOPimsc_SynchronizeAndDistributeTheTestArray_CA (Object_CA, intNumberOfImages, intA_RemoteImageNumbers, &
+                                                intTestArrayUpperBound, intA_TestArrayForRemoteTransfer)
+  ! This routine is to synchronize and distribute the TestArray (using atomic subroutines)
+  ! to the involved remote image (1).
+  ! To do so, this routine gets executed on separate coarray image(s)
+  ! (on images 2,3,4 with this example)
+  !
+  type (OOOPimsc_adtImageStatus_CA), codimension[*], intent (inout) :: Object_CA
+  integer(OOOGglob_kint), intent (in) :: intNumberOfImages ! these are the number of involved remote images
+  integer(OOOGglob_kint), dimension (intNumberOfImages), intent (in) :: intA_RemoteImageNumbers
+  integer(OOOGglob_kint), intent (in) :: intTestArrayUpperBound
+  integer(OOOGglob_kint), dimension (1:intTestArrayUpperBound), intent (in) :: intA_TestArrayForRemoteTransfer
+  integer(OOOGglob_kint) :: intCount
+  integer(OOOGglob_kint) :: intCount2
+  integer(OOOGglob_kint) :: intImageNumber
+  integer(OOOGglob_kint) :: intImageActivityFlag
+  integer(OOOGglob_kint) :: intPackedEnumValue
+  integer(OOOGglob_kint) :: intArrayElementSyncStat
+  integer(OOOGglob_kint), dimension (1:intTestArrayUpperBound) :: intA_TestArray ! will contain the packed enum values
+                                                            ! for remote transfer
+  integer(OOOGglob_kint) :: intEnumStepWidth
+  !
+                                                                call OOOGglob_subSetProcedures &
+                                                            ("OOOPimsc_SynchronizeAndDistributeTheTestArray_CA")
+  !
+  !************************************************
+  ! (1) wait until all the involved remote image (image 1 only here) do signal that they are
+  ! in state WaitForTestArrayTransfer:
+  ! (counterpart routine is step 2 in OOOPimsc_InitiateAndWaitForTestArrayTransfer_CA)
+  intImageActivityFlag = OOOPimscEnum_ImageActivityFlag % WaitForTestArrayTransfer
+  ! spin-wait loop synchronization:
+  call OOOPimscSpinWaitBulkSync_atomic_intImageActivityFlag99_CA (Object_CA, intImageActivityFlag, &
+                         intNumberOfImages, intA_RemoteImageNumbers)
+  !*************************************************
+  ! (2) pack and fill the TestArray locally with values from intA_TestArrayForRemoteTransfer:
+  ! - Firstly, set this to allow for later synchronization of the array elements on the remote images:
+  intArrayElementSyncStat = OOOPimscEnum_ArrayElementSyncStat % ArrayElementSynchronized
+  ! - pack the Enum value with input values from intA_TestArrayForRemoteTransfer and fill the
+  !   intA_TestArray elements with these values:
+  intEnumStepWidth = OOOPimscEnum_ArrayElementSyncStat % Enum_StepWidth ! only for error checking
+  do intCount = 1, intTestArrayUpperBound
+    call OOOPimsc_PackEnumValue (Object_CA, intArrayElementSyncStat, &
+                        intA_TestArrayForRemoteTransfer(intCount), intPackedEnumValue, intEnumStepWidth)
+    intA_TestArray(intCount) = intPackedEnumValue
+  end do
+  !
+  !**********************************************************************
+  ! (3) distribute the TestArray to the TestArray coarray components of the involved remote images (image 1 only here):
+  ! (counterpart synchronization routine is step 3 in OOOPimsc_InitiateAndWaitForTestArrayTransfer_CA)
+  call OOOPimsc_subSyncMemory (Object_CA) ! execute sync memory
+  do intCount = 1, intNumberOfImages ! distribute the array to each involved remote image
+     intImageNumber = intA_RemoteImageNumbers(intCount)
+    do intCount2 = 1, intTestArrayUpperBound ! distribute the array elements each individually:
+      call OOOPimscSAElement_atomic_intTestArray_CA (Object_CA, intA_TestArray(intCount2), &
+                            intImageNumber, intArrayIndex = intCount2, logExecuteSyncMemory = .false.)
+    end do
+  end do
+  !
+  !************************************************
+  ! (4) wait until all the involved remote image(s) (image 1 only here) do signal that they are
+  ! in state TestArrayRemoteTransferDone:
+  ! (counterpart routine is step 4 in OOOPimsc_InitiateAndWaitForTestArrayTransfer_CA)
+  intImageActivityFlag = OOOPimscEnum_ImageActivityFlag % TestArrayRemoteTransferDone
+  ! - spin-wait loop synchronization:
+  call OOOPimscSpinWaitBulkSync_atomic_intImageActivityFlag99_CA (Object_CA, intImageActivityFlag, &
+                         intNumberOfImages, intA_RemoteImageNumbers)
+  !
+  !**********************************************************************
+  ! (5) finish execution on the executing image (not really required for this example):
+!  call OOOPimscSAElement_atomic_intImageActivityFlag99_CA (OOOPimscImageStatus_CA_1, OOOPimscEnum_ImageActivityFlag % &
+!                                    ExecutionFinished, this_image(), logExecuteSyncMemory = .false.)
+  !
+
+                                                                call OOOGglob_subResetProcedures
+end subroutine OOOPimsc_SynchronizeAndDistributeTheTestArray_CA
+```
+<br />
+```fortran
+! executed on coarray image 1:
+!______________________________________________________________
+!
+! public
+subroutine OOOPimsc_InitiateAndWaitForTestArrayTransfer_CA (Object_CA, intTestArrayUpperBound, &
+                              intA_TestArrayForRemoteTransfer, intNumberOfRemoteImages, intA_RemoteImageNumbers)
+  ! This routine is to synchronize and receive the TestArray (using atomic subroutines indirectly)
+  ! on image 1 from the involved multiple remote images (2,3,4):
+  ! (the receiving image (image 1) will execute this rotuine)
+  type (OOOPimsc_adtImageStatus_CA), codimension[*], intent (inout) :: Object_CA
+  integer(OOOGglob_kint), intent(in) :: intTestArrayUpperBound
+  integer(OOOGglob_kint), dimension (1:intNumberOfRemoteImages, 1:intTestArrayUpperBound), intent (out) :: &
+                                                                               intA_TestArrayForRemoteTransfer
+  integer(OOOGglob_kint) :: intImageActivityFlag
+  integer(OOOGglob_kint) :: intArrayElementSyncStat
+  integer(OOOGglob_kint) :: intPackedEnumValue
+  integer(OOOGglob_kint) :: intRemoteImageNumber
+  integer(OOOGglob_kint), intent(in) :: intNumberOfRemoteImages
+  integer(OOOGglob_kint), dimension (1:intNumberOfRemoteImages), intent(in) :: intA_RemoteImageNumbers
+  integer(OOOGglob_kint), dimension (1:intNumberOfRemoteImages, 1:intTestArrayUpperBound, 1:2) :: &
+                                                             intA_ArrayElementSyncStatAndItsAdditionalAtomicValue
+  integer(OOOGglob_kint) :: intCount
+  integer(OOOGglob_kint) :: intCount2
+  integer(OOOGglob_kint) :: intEnumStepWidth
+  integer(OOOGglob_kint) :: intRemoteChannelNumberForLocalAtomicSet
+  !
+                                                                call OOOGglob_subSetProcedures &
+                                                            ("OOOPimsc_InitiateAndWaitForTestArrayTransfer_CA")
+  !
+  !**********************************************************************
+  ! (1) reset the TestArray component locally on this image (to allow for
+  ! synchronization of the array elements later on):
+  intArrayElementSyncStat = OOOPimscEnum_ArrayElementSyncStat % ArrayElementNotSynchronizedYet
+  ! - pack the Enum value together with the value 0 for the TestArray elements:
+  intEnumStepWidth = OOOPimscEnum_ArrayElementSyncStat % Enum_StepWidth ! only for error checking
+  call OOOPimsc_PackEnumValue (Object_CA, intArrayElementSyncStat, &
+                                         0, intPackedEnumValue, intEnumStepWidth)
+  ! - fill the local TestArray component atomicly:
+  do intCount2 = 1, intNumberOfRemoteImages
+    intRemoteChannelNumberForLocalAtomicSet = intA_RemoteImageNumbers(intCount2)
+    do intCount = 1, ubound(intA_TestArrayForRemoteTransfer, 1)
+      call OOOPimscSAElement_atomic_intTestArray_CA (Object_CA, intPackedEnumValue, &
+                            this_image(), intArrayIndex = intCount, logExecuteSyncMemory = .false., &
+                intRemoteChannelNumberForLocalAtomicSet = intRemoteChannelNumberForLocalAtomicSet)
+                          ! here, we do not execute sync memory for local atomic_define yet
+    end do
+  end do
+  !
+  ! *********************************************************************
+  ! (2) set this image to state 'WaitForTestArrayTransfer' and signal this to the remote images (2,3,4):
+  ! (conterpart synchronization routine is step 1 in OOOPimsc_SynchronizeAndDistributeTheTestArray_CA)
+  intImageActivityFlag = OOOPimscEnum_ImageActivityFlag % WaitForTestArrayTransfer
+  !
+  ! - pack the ImageActivityFlag together with this_image():
+  intEnumStepWidth = OOOPimscEnum_ImageActivityFlag % Enum_StepWidth ! only for error checking
+  call OOOPimsc_PackEnumValue (Object_CA, intImageActivityFlag, this_image(), intPackedEnumValue, &
+                                        intEnumStepWidth)
+  !
+  ! - signal to the remote images (2,3,4) that this image is now in state 'WaitForTestArrayTransfer':
+  do intCount = 1, intNumberOfRemoteImages
+    intRemoteImageNumber = intA_RemoteImageNumbers(intCount)
+    call OOOPimscSAElement_atomic_intImageActivityFlag99_CA (Object_CA, intPackedEnumValue, &
+                           intRemoteImageNumber, intArrayIndex = this_image(), logExecuteSyncMemory = .true.)
+  end do
+  !
+  !*************************************************************************
+  ! (3) wait until all the (local) array elements of the TestArray coarray component
+  ! (set from the multiple remote images 2,3,4) are in state ArrayElementSynchronized
+  ! (counterpart routine is step 3 in OOOPimsc_SynchronizeAndDistributeTheTestArray_CA)
+  intArrayElementSyncStat = OOOPimscEnum_ArrayElementSyncStat % ArrayElementSynchronized
+  ! - spin-wait loop bulk synchronization for the array data transfer from the multiple remote images:
+  !
+  call OOOPimscSpinWaitBulkArrayRang1Sync_atomic_intTestArray_CA (Object_CA, intArrayElementSyncStat, &
+                  intNumberOfRemoteImages, intA_RemoteImageNumbers, intTestArrayUpperBound, &
+                  intA_ArrayElementSyncStatAndItsAdditionalAtomicValue, logExecuteSyncMemory = .true.)
+  !
+  intA_TestArrayForRemoteTransfer(:,:) = &
+            intA_ArrayElementSyncStatAndItsAdditionalAtomicValue(:,:,2) ! procedure output argument
+  !
+  !*************************************************************************
+  ! (4) signal to the remote images (2,3,4) that this image is now in state 'TestArrayRemoteTransferDone'
+  ! (conterpart synchronization routine is step 4 in OOOPimsc_SynchronizeAndDistributeTheTestArray_CA)
+  intImageActivityFlag = OOOPimscEnum_ImageActivityFlag % TestArrayRemoteTransferDone
+
+  do intCount = 1, intNumberOfRemoteImages
+    intRemoteImageNumber = intA_RemoteImageNumbers(intCount)
+    call OOOPimscSAElement_atomic_intImageActivityFlag99_CA (Object_CA, intImageActivityFlag, &
+                         intRemoteImageNumber, intArrayIndex = this_image(), logExecuteSyncMemory = .true.)
+  end do
+
+  !*************************************************************************
+  ! (5) finish execution on the executing image (not really required for this example):
+!  call OOOPimscSAElement_atomic_intImageActivityFlag99_CA (OOOPimscImageStatus_CA_1, OOOPimscEnum_ImageActivityFlag % &
+!                                    ExecutionFinished, this_image(), logExecuteSyncMemory = .false.)
+  !*************************************************************************
+  !
+                                                                call OOOGglob_subResetProcedures
+end subroutine OOOPimsc_InitiateAndWaitForTestArrayTransfer_CA
+```
